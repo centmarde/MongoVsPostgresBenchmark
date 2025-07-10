@@ -1,0 +1,42 @@
+services:
+  mongo:
+    image: mongo
+    container_name: mongo
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+
+  postgres:
+    image: postgres
+    container_name: postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: pass
+      POSTGRES_DB: testdb
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  mongo-app:
+    build:
+      context: .
+      dockerfile: mongo/Dockerfile
+    depends_on:
+      - mongo
+    ports:
+      - "3001:3000"
+
+  postgres-app:
+    build:
+      context: .
+      dockerfile: postgres/Dockerfile
+    depends_on:
+      - postgres
+    ports:
+      - "3002:3000"
+
+volumes:
+  mongo-data:
+  pgdata:
