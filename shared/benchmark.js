@@ -12,6 +12,20 @@ function generateUsers(count) {
   return users;
 }
 
+function generatePostsForUser(userId, count) {
+  const posts = [];
+  for (let i = 0; i < count; i++) {
+    posts.push({
+      userId,
+      title: faker.lorem.sentence(),
+      content: faker.lorem.paragraphs(),
+      createdAt: faker.date.past(),
+      likes: faker.number.int({ min: 0, max: 1000 }),
+    });
+  }
+  return posts;
+}
+
 function measureMemory() {
   const used = process.memoryUsage();
   return {
@@ -32,4 +46,4 @@ function calculateStats(times) {
   };
 }
 
-module.exports = { generateUsers, measureMemory, calculateStats };
+module.exports = { generateUsers, generatePostsForUser, measureMemory, calculateStats };

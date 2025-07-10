@@ -1,6 +1,6 @@
 const mongoose = require('mongoose');
 const express = require('express');
-const { generateUsers, measureMemory, calculateStats } = require('./shared/benchmark');
+const { generateUsers, generatePostsForUser, measureMemory, calculateStats } = require('./shared/benchmark');
 
 const app = express();
 mongoose.connect('mongodb://mongo:27017/testdb');
@@ -11,18 +11,28 @@ const User = mongoose.model('User', {
   age: Number,
 });
 
+const Post = mongoose.model('Post', {
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  title: String,
+  content: String,
+  createdAt: Date,
+  likes: Number
+});
+
 app.get('/benchmark', async (req, res) => {
   const count = parseInt(req.query.count) || 1000;
+  const postsPerUser = parseInt(req.query.postsPerUser) || 3;
   const results = {};
   
-  // Clear collection
+  // Clear collections
   await User.deleteMany({});
+  await Post.deleteMany({});
   
   // Insert Benchmark
   const users = generateUsers(count);
   const memoryBefore = measureMemory();
   const insertStart = Date.now();
-  await User.insertMany(users);
+  const insertedUsers = await User.insertMany(users);
   const insertEnd = Date.now();
   const memoryAfter = measureMemory();
   
@@ -33,6 +43,22 @@ app.get('/benchmark', async (req, res) => {
     memoryUsed: memoryAfter.heapUsed - memoryBefore.heapUsed,
   };
   
+  // Insert related posts
+  const postsStart = Date.now();
+  let allPosts = [];
+  for (const user of insertedUsers) {
+    const posts = generatePostsForUser(user._id, postsPerUser);
+    allPosts = allPosts.concat(posts);
+  }
+  await Post.insertMany(allPosts);
+  const postsEnd = Date.now();
+  
+  results.insertRelated = {
+    count: allPosts.length,
+    time: postsEnd - postsStart,
+    throughput: Math.round(allPosts.length / ((postsEnd - postsStart) / 1000)),
+  };
+
   // Read Benchmark
   const readStart = Date.now();
   const allUsers = await User.find({});
@@ -130,6 +156,61 @@ app.get('/benchmark', async (req, res) => {
     time: countEnd - countStart,
   };
   
+  // Relationship queries
+  // Find all posts for a specific user
+  const randomUser = await User.findOne().skip(Math.floor(Math.random() * count));
+  const userPostsStart = Date.now();
+  const userPosts = await Post.find({ userId: randomUser._id });
+  const userPostsEnd = Date.now();
+  queries.userPosts = {
+    count: userPosts.length,
+    time: userPostsEnd - userPostsStart,
+    throughput: Math.round(userPosts.length / ((userPostsEnd - userPostsStart) / 1000)),
+  };
+  
+  // Join query with lookup
+  const joinStart = Date.now();
+  const usersWithPosts = await User.aggregate([
+    { $match: { age: { $gte: 30 } } },
+    { $limit: 20 },
+    {
+      $lookup: {
+        from: 'posts',
+        localField: '_id',
+        foreignField: 'userId',
+        as: 'posts'
+      }
+    }
+  ]);
+  const joinEnd = Date.now();
+  queries.joinQuery = {
+    count: usersWithPosts.length,
+    time: joinEnd - joinStart,
+    throughput: Math.round(usersWithPosts.length / ((joinEnd - joinStart) / 1000)),
+  };
+  
+  // Find popular posts with user details
+  const popularPostsStart = Date.now();
+  const popularPosts = await Post.aggregate([
+    { $match: { likes: { $gte: 500 } } },
+    { $limit: 20 },
+    {
+      $lookup: {
+        from: 'users',
+        localField: 'userId',
+        foreignField: '_id',
+        as: 'author'
+      }
+    },
+    { $unwind: '$author' }
+  ]);
+  const popularPostsEnd = Date.now();
+  queries.popularPosts = {
+    count: popularPosts.length,
+    time: popularPostsEnd - popularPostsStart,
+    throughput: Math.round(popularPosts.length / ((popularPostsEnd - popularPostsStart) / 1000)),
+  };
+
   results.queries = queries;
   
   // Update Benchmark

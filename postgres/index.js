@@ -1,6 +1,6 @@
 const { Sequelize, DataTypes } = require('sequelize');
 const express = require('express');
-const { generateUsers, measureMemory, calculateStats } = require('./shared/benchmark');
+const { generateUsers, generatePostsForUser, measureMemory, calculateStats } = require('./shared/benchmark');
 
 const app = express();
 
@@ -15,22 +15,35 @@ const User = sequelize.define('User', {
   age: DataTypes.INTEGER,
 });
 
+const Post = sequelize.define('Post', {
+  title: DataTypes.STRING,
+  content: DataTypes.TEXT,
+  createdAt: DataTypes.DATE,
+  likes: DataTypes.INTEGER,
+});
+
+// Define relationships
+User.hasMany(Post);
+Post.belongsTo(User);
+
 (async () => {
   await sequelize.sync({ force: true });
 })();
 
 app.get('/benchmark', async (req, res) => {
   const count = parseInt(req.query.count) || 1000;
+  const postsPerUser = parseInt(req.query.postsPerUser) || 3;
   const results = {};
   
-  // Clear table
+  // Clear tables
+  await Post.destroy({ where: {} });
   await User.destroy({ where: {} });
   
   // Insert Benchmark
   const users = generateUsers(count);
   const memoryBefore = measureMemory();
   const insertStart = Date.now();
-  await User.bulkCreate(users);
+  const insertedUsers = await User.bulkCreate(users);
   const insertEnd = Date.now();
   const memoryAfter = measureMemory();
   
@@ -41,6 +54,25 @@ app.get('/benchmark', async (req, res) => {
     memoryUsed: memoryAfter.heapUsed - memoryBefore.heapUsed,
   };
   
+  // Insert related posts
+  const postsStart = Date.now();
+  let allPosts = [];
+  for (const user of insertedUsers) {
+    const posts = generatePostsForUser(user.id, postsPerUser).map(post => ({
+      ...post,
+      userId: user.id
+    }));
+    allPosts = allPosts.concat(posts);
+  }
+  await Post.bulkCreate(allPosts);
+  const postsEnd = Date.now();
+  
+  results.insertRelated = {
+    count: allPosts.length,
+    time: postsEnd - postsStart,
+    throughput: Math.round(allPosts.length / ((postsEnd - postsStart) / 1000)),
+  };
+
   // Read Benchmark
   const readStart = Date.now();
   const allUsers = await User.findAll();
@@ -144,6 +176,49 @@ app.get('/benchmark', async (req, res) => {
     time: countEnd - countStart,
   };
   
+  // Relationship queries
+  // Find all posts for a specific user
+  const randomUser = await User.findOne({ order: sequelize.random() });
+  const userPostsStart = Date.now();
+  const userPosts = await Post.findAll({ where: { UserId: randomUser.id } });
+  const userPostsEnd = Date.now();
+  queries.userPosts = {
+    count: userPosts.length,
+    time: userPostsEnd - userPostsStart,
+    throughput: Math.round(userPosts.length / ((userPostsEnd - userPostsStart) / 1000)),
+  };
+  
+  // Join query with include
+  const joinStart = Date.now();
+  const usersWithPosts = await User.findAll({
+    where: { age: { [Sequelize.Op.gte]: 30 } },
+    include: Post,
+    limit: 20
+  });
+  const joinEnd = Date.now();
+  queries.joinQuery = {
+    count: usersWithPosts.length,
+    time: joinEnd - joinStart,
+    throughput: Math.round(usersWithPosts.length / ((joinEnd - joinStart) / 1000)),
+  };
+  
+  // Find popular posts with user details
+  const popularPostsStart = Date.now();
+  const popularPosts = await Post.findAll({
+    where: { likes: { [Sequelize.Op.gte]: 500 } },
+    include: {
+      model: User,
+      attributes: ['id', 'name', 'email']
+    },
+    limit: 20
+  });
+  const popularPostsEnd = Date.now();
+  queries.popularPosts = {
+    count: popularPosts.length,
+    time: popularPostsEnd - popularPostsStart,
+    throughput: Math.round(popularPosts.length / ((popularPostsEnd - popularPostsStart) / 1000)),
+  };
+
   results.queries = queries;
   
   // Update Benchmark
